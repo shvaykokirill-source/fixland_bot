@@ -1,4 +1,5 @@
 from aiogram import Router, F, types, Bot
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from config import config
 from database import (
@@ -8,7 +9,8 @@ from database import (
     get_user_orders,
     get_setting,
     get_order,
-    update_order_status
+    update_order_status,
+    get_connection
 )
 from keyboards import (
     shop_categories_kb,
@@ -80,7 +82,7 @@ async def select_privilege(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ShopState.waiting_for_priv_nick)
 async def process_priv_nick(message: types.Message, state: FSMContext):
-    nick = message.text.strip()
+    nick = message.text.strip() if message.text else ""
     if len(nick) < 3 or len(nick) > 16 or " " in nick:
         await message.answer("⚠️ Введите корректный игровой никнейм (от 3 до 16 символов без пробелов):")
         return
@@ -113,7 +115,7 @@ async def select_rubles(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ShopState.waiting_for_rub_amount)
 async def process_rub_amount(message: types.Message, state: FSMContext):
-    text = message.text.strip()
+    text = message.text.strip() if message.text else ""
     if not text.isdigit() or not (10 <= int(text) <= 50000):
         await message.answer("⚠️ Введите корректное число от 10 до 50 000 ₽:")
         return
@@ -130,7 +132,7 @@ async def process_rub_amount(message: types.Message, state: FSMContext):
 
 @router.message(ShopState.waiting_for_rub_nick)
 async def process_rub_nick(message: types.Message, state: FSMContext):
-    nick = message.text.strip()
+    nick = message.text.strip() if message.text else ""
     await state.update_data(mc_nickname=nick)
     data = await state.get_data()
 
@@ -166,7 +168,7 @@ async def select_unban(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ShopState.waiting_for_unban_nick)
 async def process_unban_nick(message: types.Message, state: FSMContext):
-    nick = message.text.strip()
+    nick = message.text.strip() if message.text else ""
     await state.update_data(mc_nickname=nick)
     data = await state.get_data()
     await message.answer(
@@ -201,7 +203,7 @@ async def select_unmute(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ShopState.waiting_for_unmute_nick)
 async def process_unmute_nick(message: types.Message, state: FSMContext):
-    nick = message.text.strip()
+    nick = message.text.strip() if message.text else ""
     await state.update_data(mc_nickname=nick)
     data = await state.get_data()
     await message.answer(
@@ -237,7 +239,7 @@ async def show_my_orders(callback: types.CallbackQuery):
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
-# Выбор конкретного способа оплаты и выдача реквизитов
+# Выбор конкретного способа оплаты и отправка карточки администраторам
 @router.callback_query(F.data.startswith("pay:"))
 async def process_payment_selection(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split(":")
@@ -250,11 +252,9 @@ async def process_payment_selection(callback: types.CallbackQuery, state: FSMCon
     item_type = user_data.get("item_type", "privilege")
 
     method_title = PAY_METHOD_NAMES.get(method_key, "Банковский перевод")
-    setting_key = SETTINGS_KEYS.get(method_key, "requisites_card_rf")
-    requisites = await get_setting(setting_key, "Реквизиты уточняйте у поддержки: @Hupiiaristo")
+    username = f"@{callback.from_user.username}" if callback.from_user and callback.from_user.username else (callback.from_user.full_name if callback.from_user else "Пользователь")
 
-    username = f"@{callback.from_user.username}" if callback.from_user.username else callback.from_user.full_name
-
+    # Создаем запись о заказе в базе данных
     ticket_id = await create_ticket(
         user_id=callback.from_user.id,
         username=username,
@@ -268,17 +268,49 @@ async def process_payment_selection(callback: types.CallbackQuery, state: FSMCon
     await state.update_data(ticket_id=ticket_id, pay_method_title=method_title)
     await state.set_state(ShopState.waiting_for_receipt)
 
-    bill_text = (
-        f"🧾 <b>СЧЁТ НА ОПЛАТУ #{ticket_id}</b>\n\n"
+    # 1. Уведомляем покупателя в ЛС
+    await callback.message.answer(
+        f"⏳ <b>СЧЁТ НА ОПЛАТУ #{ticket_id} СФОРМИРОВАН!</b>\n\n"
         f"📦 <b>Товар:</b> {item_name}\n"
         f"🎮 <b>Никнейм:</b> <code>{nick}</code>\n"
         f"💵 <b>Сумма к оплате:</b> <b>{price} ₽</b>\n"
-        f"💳 <b>Способ оплаты:</b> {method_title}\n\n"
-        f"📌 <b>Реквизиты для перевода:</b>\n{requisites}\n\n"
-        "⚠️ <i>После совершения перевода отправьте сюда скриншот чека об оплате (фото или документом):</i>"
+        f"💳 <b>Способ:</b> {method_title}\n\n"
+        "<i>Администратор готовит реквизиты для оплаты. Ожидайте сообщения в этом чате...\n"
+        "После перевода отправьте сюда скриншот/документ чека.</i>",
+        reply_markup=receipt_action_kb(),
+        parse_mode="HTML"
     )
 
-    await callback.message.answer(bill_text, reply_markup=receipt_action_kb(), parse_mode="HTML")
+    # 2. Формируем и отправляем карточку заказа в чат администрации с кнопками управления
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 Указать реквизиты / карту", callback_data=f"send_req:{ticket_id}:{callback.from_user.id}")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"order_act:reject:{ticket_id}")
+        ]
+    ])
+
+    admin_card = (
+        f"🔔 <b>НОВЫЙ ЗАПРОС НА ОПЛАТУ #{ticket_id}</b>\n\n"
+        f"👤 <b>Покупатель:</b> {username} (ID: <code>{callback.from_user.id}</code>)\n"
+        f"🎮 <b>Игровой ник:</b> <code>{nick}</code>\n"
+        f"📦 <b>Товар:</b> {item_name}\n"
+        f"💵 <b>Сумма:</b> {price} ₽\n"
+        f"💳 <b>Способ:</b> {method_title}\n\n"
+        "👉 <i>Нажмите кнопку ниже, чтобы выслать игроку номер карты или СБП!</i>"
+    )
+
+    try:
+        await callback.bot.send_message(
+            chat_id=config.ADMIN_CHAT_ID,
+            text=admin_card,
+            reply_markup=admin_kb,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"[ERROR] Could not notify ADMIN_CHAT_ID: {e}")
+
     await callback.answer()
 
 # Загрузка чека пользователем
@@ -292,19 +324,15 @@ async def process_receipt_upload(message: types.Message, state: FSMContext):
         return
 
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    username = f"@{message.from_user.username}" if message.from_user and message.from_user.username else (message.from_user.full_name if message.from_user else "Пользователь")
 
-    # Обновляем чек в тикете
-    from database import get_connection
-    conn = await get_connection()
-    try:
+    # Сохраняем ID файла чека в БД через безопасный контекстный менеджер
+    async with await get_connection() as conn:
         await conn.execute("UPDATE tickets SET receipt_file_id = ? WHERE id = ?", (file_id, ticket_id))
         await conn.commit()
-    finally:
-        await conn.close()
 
     card_text = (
-        f"🛒 <b>НОВЫЙ ЗАКАЗ #{ticket_id}</b>\n\n"
+        f"🛒 <b>ЧЕК ПО ЗАКАЗУ #{ticket_id}</b>\n\n"
         f"👤 <b>Покупатель:</b> {username} (ID: <code>{message.from_user.id}</code>)\n"
         f"🎮 <b>Игровой ник:</b> <code>{data.get('mc_nickname', '—')}</code>\n"
         f"📦 <b>Товар:</b> {data.get('item_name')}\n"
@@ -312,7 +340,7 @@ async def process_receipt_upload(message: types.Message, state: FSMContext):
         f"💳 <b>Способ:</b> {data.get('pay_method_title')}"
     )
 
-    # Отправляем фото чека с кнопками в группу администрации
+    # Пересылаем чек с кнопками подтв./откл. в группу администрации
     try:
         if message.photo:
             await message.bot.send_photo(
