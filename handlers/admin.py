@@ -22,11 +22,10 @@ from database import (
     update_complaint_status,
     get_media_request,
     update_media_request_status,
-    get_all_users,
-    main_menu_kb
+    get_all_users
 )
 from states import AdminState
-from keyboards import admin_panel_kb, admin_requisites_kb, admin_back_kb
+from keyboards import admin_panel_kb, admin_requisites_kb, admin_back_kb, main_menu_kb
 
 router = Router()
 
@@ -92,7 +91,7 @@ async def cmd_manage_role(message: Message):
         await message.reply("⚠️ Неизвестная роль! Допустимо: медиа, модератор, хелпер, админ, снять.")
         return
 
-    admin_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    admin_tag = f"@{message.from_user.username}" if message.from_user and message.from_user.username else (message.from_user.full_name if message.from_user else "Администратор")
 
     if role == "remove":
         await remove_staff_role(target_id)
@@ -161,7 +160,7 @@ async def cmd_quick_role(message: Message):
         )
         return
 
-    admin_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    admin_tag = f"@{message.from_user.username}" if message.from_user and message.from_user.username else (message.from_user.full_name if message.from_user else "Администратор")
 
     if role == "remove":
         await remove_staff_role(target_id)
@@ -232,21 +231,18 @@ async def process_order_moderation(callback: CallbackQuery, bot: Bot):
         return
 
     admin = callback.from_user
-    admin_tag = f"@{admin.username}" if admin.username else admin.full_name
+    admin_tag = f"@{admin.username}" if admin and admin.username else (admin.full_name if admin else "Администратор")
 
     new_status = "approved" if action == "approve" else "rejected"
     await update_order_status(
         order_id=order_id,
         status=new_status,
-        helper_id=admin.id,
+        helper_id=admin.id if admin else 0,
         helper_username=admin_tag
     )
 
     caption = callback.message.caption or callback.message.text or ""
-    if action == "approve":
-        status_line = f"\n\n✅ <b>ОДОБРЕНО И ВЫДАНО</b> (Обработал: {admin_tag})"
-    else:
-        status_line = f"\n\n❌ <b>ОТКЛОНЕНО</b> (Обработал: {admin_tag})"
+    status_line = f"\n\n✅ <b>ОДОБРЕНО И ВЫДАНО</b> (Обработал: {admin_tag})" if action == "approve" else f"\n\n❌ <b>ОТКЛОНЕНО</b> (Обработал: {admin_tag})"
 
     try:
         if callback.message.photo or callback.message.document:
@@ -296,16 +292,19 @@ async def process_app_moderation(callback: CallbackQuery, bot: Bot):
         return
 
     admin = callback.from_user
-    admin_tag = f"@{admin.username}" if admin.username else admin.full_name
+    admin_tag = f"@{admin.username}" if admin and admin.username else (admin.full_name if admin else "Администратор")
 
     new_status = "approved" if action == "approve" else "rejected"
     await update_application_status(app_id, new_status, admin_tag)
 
-    msg_text = callback.message.text or ""
+    msg_text = callback.message.text or callback.message.caption or ""
     status_line = f"\n\n✅ <b>ЗАЯВКА ОДОБРЕНА</b> (Куратор: {admin_tag})" if action == "approve" else f"\n\n❌ <b>ЗАЯВКА ОТКЛОНЕНА</b> (Куратор: {admin_tag})"
 
     try:
-        await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
     except Exception:
         pass
 
@@ -349,16 +348,19 @@ async def process_complaint_moderation(callback: CallbackQuery, bot: Bot):
         return
 
     admin = callback.from_user
-    admin_tag = f"@{admin.username}" if admin.username else admin.full_name
+    admin_tag = f"@{admin.username}" if admin and admin.username else (admin.full_name if admin else "Администратор")
 
     new_status = "approved" if action == "approve" else "rejected"
     await update_complaint_status(comp_id, new_status, admin_tag)
 
-    msg_text = callback.message.text or ""
+    msg_text = callback.message.text or callback.message.caption or ""
     status_line = f"\n\n✅ <b>ЖАЛОБА УДОВЛЕТВОРЕНА / МЕРЫ ПРИНЯТЫ</b> ({admin_tag})" if action == "approve" else f"\n\n❌ <b>ОТКЛОНЕНО (НЕДОСТАТОЧНО ДОКАЗАТЕЛЬСТВ / НЕ ПО ФОРМЕ)</b> ({admin_tag})"
 
     try:
-        await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
     except Exception:
         pass
 
@@ -401,16 +403,19 @@ async def process_media_payout_moderation(callback: CallbackQuery, bot: Bot):
         return
 
     admin = callback.from_user
-    admin_tag = f"@{admin.username}" if admin.username else admin.full_name
+    admin_tag = f"@{admin.username}" if admin and admin.username else (admin.full_name if admin else "Администратор")
 
     new_status = "approved" if action == "approve" else "rejected"
     await update_media_request_status(req_id, new_status, admin_tag)
 
-    msg_text = callback.message.text or ""
+    msg_text = callback.message.text or callback.message.caption or ""
     status_line = f"\n\n✅ <b>ВЫПЛАЧЕНО / ВЫДАНО</b> ({admin_tag})" if action == "approve" else f"\n\n❌ <b>ОТКЛОНЕНО</b> ({admin_tag})"
 
     try:
-        await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        if callback.message.photo or callback.message.document:
+            await callback.message.edit_caption(caption=msg_text + status_line, reply_markup=None, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=msg_text + status_line, reply_markup=None, parse_mode="HTML")
     except Exception:
         pass
 
@@ -591,7 +596,7 @@ async def admin_set_setting_prompt(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminState.waiting_for_setting_value)
 async def admin_save_setting_value(message: Message, state: FSMContext):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else 0
     if not await is_moderator_or_higher(user_id):
         await state.clear()
         return
@@ -636,7 +641,7 @@ async def admin_broadcast_prompt(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminState.waiting_for_broadcast)
 async def admin_execute_broadcast(message: Message, state: FSMContext):
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else 0
     if not await is_admin_user(user_id):
         await state.clear()
         return
