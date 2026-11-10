@@ -118,7 +118,6 @@ async def cmd_manage_role(message: Message):
         parse_mode="HTML"
     )
 
-    # Уведомляем пользователя в ЛС и обновляем его меню
     try:
         is_adm = role in ("admin", "moderator")
         await message.bot.send_message(
@@ -135,7 +134,6 @@ async def cmd_manage_role(message: Message):
         pass
 
 
-# Прямые быстрые команды: /медиа, /модератор, /хелпер, /админ, /снять
 @router.message(Command("media", "медиа", "модератор", "модер", "moder", "хелпер", "helper", "админ", "admin", "снять"))
 async def cmd_quick_role(message: Message):
     if not await can_manage_roles(message):
@@ -192,7 +190,6 @@ async def cmd_quick_role(message: Message):
         pass
 
 
-# Список персонала: /staff или /состав
 @router.message(Command("staff", "состав"))
 async def cmd_staff_list(message: Message):
     staff_members = await get_all_staff()
@@ -254,7 +251,6 @@ async def process_order_moderation(callback: CallbackQuery, bot: Bot):
 
     await callback.answer(f"Заказ #{order_id} {'одобрен' if action == 'approve' else 'отклонен'}!")
 
-    # Уведомление покупателю
     user_id = order["user_id"]
     if action == "approve":
         buyer_msg = (
@@ -273,6 +269,57 @@ async def process_order_moderation(callback: CallbackQuery, bot: Bot):
         await bot.send_message(chat_id=user_id, text=buyer_msg, parse_mode="HTML")
     except Exception:
         pass
+
+
+# Запрос отправки реквизитов СБП / Карты покупателю из группы
+@router.callback_query(F.data.startswith("send_req:"))
+async def prompt_admin_for_requisites(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    ticket_id = int(parts[1])
+    target_user_id = int(parts[2])
+
+    await state.set_state(AdminState.waiting_for_setting_value)
+    await state.update_data(send_to_user=target_user_id, target_ticket_id=ticket_id)
+
+    await callback.message.reply(
+        f"💳 <b>Отправка реквизитов по заказу #{ticket_id}:</b>\n\n"
+        "Отправьте ответным сообщением номер карты / СБП / данные (например: <code>+7 999 000-00-00 (Сбербанк)</code>):",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# Прямая команда: /карту <ID игрока> <реквизиты>
+@router.message(Command("card", "карта", "карту"))
+async def cmd_send_card_direct(message: Message):
+    if not await can_manage_roles(message):
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.reply("ℹ️ Использование: <code>/карту &lt;ID_игрока&gt; &lt;номер карты / реквизиты&gt;</code>", parse_mode="HTML")
+        return
+
+    target_id = int(parts[1]) if parts[1].isdigit() else 0
+    if not target_id:
+        await message.reply("⚠️ Укажите корректный Telegram ID игрока (цифрами).")
+        return
+
+    card_details = parts[2]
+
+    try:
+        await message.bot.send_message(
+            chat_id=target_id,
+            text=(
+                "💳 <b>РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ:</b>\n\n"
+                f"<code>{card_details}</code>\n\n"
+                "📌 Переведите указанную сумму и отправьте скриншот/документ чека в этот чат!"
+            ),
+            parse_mode="HTML"
+        )
+        await message.reply(f"✅ Реквизиты успешно отправлены игроку с ID <code>{target_id}</code>!", parse_mode="HTML")
+    except Exception as e:
+        await message.reply(f"❌ Не удалось отправить реквизиты игроку: {e}")
 
 
 # 2. Заявки на Хелпера / Медиа
@@ -310,7 +357,6 @@ async def process_app_moderation(callback: CallbackQuery, bot: Bot):
 
     await callback.answer(f"Заявка #{app_id} рассмотрена!")
 
-    # Уведомление кандидату
     user_id = app["user_id"]
     app_type = app.get("app_type", "Хелпер")
     if action == "approve":
@@ -366,7 +412,6 @@ async def process_complaint_moderation(callback: CallbackQuery, bot: Bot):
 
     await callback.answer(f"Жалоба #{comp_id} обработана!")
 
-    # Уведомление подателю жалобы
     user_id = comp["user_id"]
     if action == "approve":
         user_msg = (
@@ -607,6 +652,28 @@ async def admin_save_setting_value(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
+
+    # Если это отправка индивидуальных реквизитов конкретному покупателю по заказу
+    if "send_to_user" in data:
+        target_id = data["send_to_user"]
+        ticket_id = data.get("target_ticket_id", 0)
+        await state.clear()
+        try:
+            await message.bot.send_message(
+                chat_id=target_id,
+                text=(
+                    f"💳 <b>РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ ЗАКАЗА #{ticket_id}:</b>\n\n"
+                    f"<code>{new_value}</code>\n\n"
+                    "📌 Переведите сумму по указанным реквизитам и отправьте скриншот/документ чека в этот чат!"
+                ),
+                parse_mode="HTML"
+            )
+            await message.reply(f"✅ Реквизиты по заказу #{ticket_id} успешно отправлены покупателю (ID: <code>{target_id}</code>)!", parse_mode="HTML")
+        except Exception as e:
+            await message.reply(f"❌ Не удалось отправить реквизиты игроку: {e}")
+        return
+
+    # Системное сохранение настроек реквизитов
     key = data["setting_key"]
     title = data.get("setting_title", key)
 
